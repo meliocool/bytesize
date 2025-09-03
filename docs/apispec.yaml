@@ -1,0 +1,101 @@
+openapi: 3.1.0
+info:
+  title: ByteSize API
+  description: Content-addressable storage with chunk-level deduplication
+  version: 1.0.0
+servers:
+  - url: 'http://localhost:8080'
+paths:
+  /files:
+    post:
+      summary: Upload a file (multipart)
+      tags: [ByteSize]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                filename:
+                  type: string
+      responses:
+        '201':
+          description: File stored (dedupe-aware)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, filename, total_size, chunks_count, unique_chunks_written, dedupe_saved_bytes]
+                properties:
+                  id: { type: string, format: uuid }
+                  filename: { type: string }
+                  total_size: { type: integer, format: int64 }
+                  chunks_count: { type: integer }
+                  unique_chunks_written: { type: integer }
+                  dedupe_saved_bytes: { type: integer, format: int64 }
+        '400': { description: Bad request / invalid multipart }
+        '413': { description: Payload too large }
+        '500': { description: Internal error }
+  /files/{id}:
+    get:
+      summary: Get file metadata and manifest
+      tags: [ByteSize]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: File metadata with manifest
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, filename, total_size, chunks_count, manifest]
+                properties:
+                  id: { type: string, format: uuid }
+                  filename: { type: string }
+                  total_size: { type: integer, format: int64 }
+                  chunks_count: { type: integer }
+                  stats:
+                    type: object
+                    properties:
+                      unique_chunks_global: { type: integer }
+                      dedupe_ratio: { type: number, format: float }
+                  manifest:
+                    type: array
+                    items:
+                      type: object
+                      required: [idx, hash, size]
+                      properties:
+                        idx: { type: integer }
+                        hash: { type: string }
+                        size: { type: integer }
+        '404': { description: Not found }
+        '500': { description: Internal error }
+  /files/{id}/download:
+    get:
+      summary: Download original file bytes
+      tags: [ByteSize]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Raw byte stream
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404': { description: Not found }
+        '500': { description: Internal error }
+  
