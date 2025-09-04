@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"github.com/go-playground/validator/v10"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"io"
 	"meliocool/bytesize/internal/helper"
@@ -25,14 +26,21 @@ type UploadServiceImpl struct {
 	Validate            *validator.Validate
 }
 
-func NewUploadService(ChunkRepository repository.ChunkRepository, FileRepository repository.FileRepository, FileChunkRepository repository.FileChunkRepository, ChunkStore storage.ChunkStore, DB *pgxpool.Pool, Validate *validator.Validate) UploadService {
+func NewUploadService(
+	chunkRepo repository.ChunkRepository,
+	fileRepo repository.FileRepository,
+	fileChunkRepo repository.FileChunkRepository,
+	chunkStore storage.ChunkStore,
+	db *pgxpool.Pool,
+	validate *validator.Validate,
+) UploadService {
 	return &UploadServiceImpl{
-		ChunkRepository:     ChunkRepository,
-		FileRepository:      FileRepository,
-		FileChunkRepository: FileChunkRepository,
-		ChunkStore:          ChunkStore,
-		DB:                  DB,
-		Validate:            Validate,
+		ChunkRepository:     chunkRepo,
+		FileRepository:      fileRepo,
+		FileChunkRepository: fileChunkRepo,
+		ChunkStore:          chunkStore,
+		DB:                  db,
+		Validate:            validate,
 	}
 }
 
@@ -56,79 +64,69 @@ type storedChunkItem struct {
 	Reused bool
 }
 
-func (u *UploadServiceImpl) Upload(ctx context.Context, request web.UploadRequest) (web.UploadResponse, error) {
-	err := u.Validate.Struct(request)
-	if err != nil {
-		return web.UploadResponse{}, helper.ErrInvalidInput
-	}
+type uploadCounters struct {
+	TotalSize           int64
+	ChunksCount         int64
+	UniqueChunksWritten int64
+	DedupeSavedBytes    int64
+}
 
+// * createFileRow inserts the initial file row
+func (u *UploadServiceImpl) createFileRow(ctx context.Context, filename string) (domain.File, error) {
 	tx, err := u.DB.Begin(ctx)
 	if err != nil {
-		return web.UploadResponse{}, err
+		return domain.File{}, err
 	}
-
-	file := domain.File{
-		Filename:  request.FileName,
-		TotalSize: 0,
-	}
-
+	file := domain.File{Filename: filename, TotalSize: 0}
 	createdFile, err := u.FileRepository.Create(ctx, tx, file)
 	if err != nil {
-		tx.Rollback(ctx)
-		return web.UploadResponse{}, helper.ErrInternal
+		_ = tx.Rollback(ctx)
+		return domain.File{}, err
 	}
-
-	firstCommErr := tx.Commit(ctx)
-	if firstCommErr != nil {
-		return web.UploadResponse{}, helper.ErrInternal
+	if err := tx.Commit(ctx); err != nil {
+		return domain.File{}, err
 	}
+	return createdFile, nil
+}
 
-	var totalSize int64 = 0
-	var chunksCount int64 = 0
-	var uniqueChunksWritten int64 = 0
-	var dedupeSavedBytes int64 = 0
-	var chunkSize = helper.ChunkSize
-	var batchSize = helper.BatchSize
-	var workers = helper.Workers
-
-	chCtx, cancel := context.WithCancel(ctx)
-	errCh := make(chan error, 1)
-	chunksCh := make(chan chunkItem, 8)
-	hashedCh := make(chan hashedChunkItem, 8)
-	storedCh := make(chan storedChunkItem, 8)
-
-	var wg sync.WaitGroup
-
-	// * Chunker
+// * startChunker reads from io.Reader and sends chunks into out channel.
+func (u *UploadServiceImpl) startChunker(
+	chCtx context.Context,
+	wg *sync.WaitGroup,
+	r io.Reader,
+	out chan<- chunkItem,
+	errCh chan<- error,
+	chunkSize int,
+) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer close(out)
+
 		buffer := make([]byte, chunkSize)
-		var idxLocal int64 = 0
+		var idx int64 = 0
+
 		for {
 			select {
 			case <-chCtx.Done():
 				return
 			default:
 			}
-			n, readErr := request.Reader.Read(buffer)
+
+			n, readErr := r.Read(buffer)
 			if n > 0 {
-				chunkSlice := make([]byte, n)
-				copy(chunkSlice, buffer[:n])
-				chunk := chunkItem{
-					Idx:   idxLocal,
-					Bytes: chunkSlice,
-					Size:  int64(n),
-				}
+				chunkCopy := make([]byte, n)
+				copy(chunkCopy, buffer[:n])
+				ch := chunkItem{Idx: idx, Bytes: chunkCopy, Size: int64(n)}
 				select {
-				case chunksCh <- chunk:
-					idxLocal++
+				case out <- ch:
+					idx++
 				case <-chCtx.Done():
 					return
 				}
 			}
+
 			if readErr == io.EOF {
-				close(chunksCh)
 				return
 			}
 			if readErr != nil {
@@ -136,246 +134,283 @@ func (u *UploadServiceImpl) Upload(ctx context.Context, request web.UploadReques
 				case errCh <- readErr:
 				default:
 				}
-				cancel()
 				return
 			}
 		}
 	}()
+}
 
-	// * Hasher
+// startHasher consumes chunkItem, hashes it, then sends hashedChunkItem.
+func (u *UploadServiceImpl) startHasher(
+	chCtx context.Context,
+	wg *sync.WaitGroup,
+	in <-chan chunkItem,
+	out chan<- hashedChunkItem,
+) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for chunk := range chunksCh {
-			chunkBytes := sha256.Sum256(chunk.Bytes)
-			chunkStr := hex.EncodeToString(chunkBytes[:])
-			hashedChunk := hashedChunkItem{
-				Idx:   chunk.Idx,
-				Bytes: chunk.Bytes,
-				Size:  chunk.Size,
-				Hash:  chunkStr,
+		defer close(out)
+
+		for ch := range in {
+			sum := sha256.Sum256(ch.Bytes)
+			hash := hex.EncodeToString(sum[:])
+			hc := hashedChunkItem{
+				Idx:   ch.Idx,
+				Bytes: ch.Bytes,
+				Size:  ch.Size,
+				Hash:  hash,
 			}
 			select {
-			case hashedCh <- hashedChunk:
+			case out <- hc:
 			case <-chCtx.Done():
 				return
 			}
 		}
-		close(hashedCh)
 	}()
+}
 
-	var wwg sync.WaitGroup
-
-	// * Store + Upsert Worker Pool
+// startStoreWorkers runs a pool of workers that put chunks in FS + Metadata in DB.
+func (u *UploadServiceImpl) startStoreWorkers(
+	chCtx context.Context,
+	wwg *sync.WaitGroup,
+	in <-chan hashedChunkItem,
+	out chan<- storedChunkItem,
+	errCh chan<- error,
+	workers int,
+) {
 	for i := 0; i < workers; i++ {
 		wwg.Add(1)
 		go func() {
 			defer wwg.Done()
-			for chunk := range hashedCh {
+			for ch := range in {
 				select {
 				case <-chCtx.Done():
 					return
 				default:
 				}
+
 				reused := false
-				ok, exErr := u.ChunkStore.Exists(chunk.Hash)
+				ok, exErr := u.ChunkStore.Exists(ch.Hash)
 				if exErr != nil {
 					select {
 					case errCh <- exErr:
 					default:
 					}
-					cancel()
 					return
 				}
 				if ok {
 					reused = true
 				} else {
-					chunkReader := bytes.NewReader(chunk.Bytes)
-					putErr := u.ChunkStore.Put(chunk.Hash, chunkReader, chunk.Size)
-					if putErr != nil {
+					reader := bytes.NewReader(ch.Bytes)
+					if putErr := u.ChunkStore.Put(ch.Hash, reader, ch.Size); putErr != nil {
 						select {
 						case errCh <- putErr:
 						default:
 						}
-						cancel()
 						return
 					}
 				}
+
 				tx, txErr := u.DB.Begin(chCtx)
 				if txErr != nil {
 					select {
 					case errCh <- txErr:
 					default:
 					}
-					cancel()
 					return
 				}
-				_, _, upsertErr := u.ChunkRepository.Upsert(chCtx, tx, domain.Chunk{Hash: chunk.Hash, Size: chunk.Size})
+				_, _, upsertErr := u.ChunkRepository.Upsert(chCtx, tx, domain.Chunk{Hash: ch.Hash, Size: ch.Size})
 				if upsertErr != nil {
 					_ = tx.Rollback(chCtx)
 					select {
 					case errCh <- upsertErr:
 					default:
 					}
-					cancel()
 					return
 				}
-				commErr := tx.Commit(chCtx)
-				if commErr != nil {
+				if err := tx.Commit(chCtx); err != nil {
 					select {
-					case errCh <- commErr:
+					case errCh <- err:
 					default:
 					}
-					cancel()
 					return
 				}
-				chunkStored := storedChunkItem{
-					Idx:    chunk.Idx,
-					Hash:   chunk.Hash,
-					Size:   chunk.Size,
-					Reused: reused,
-				}
+
+				sc := storedChunkItem{Idx: ch.Idx, Hash: ch.Hash, Size: ch.Size, Reused: reused}
 				select {
-				case storedCh <- chunkStored:
+				case out <- sc:
 				case <-chCtx.Done():
 					return
 				}
 			}
 		}()
 	}
+}
+
+// closes storedCh
+func closeStoredWhenWorkersDone(wwg *sync.WaitGroup, out chan<- storedChunkItem) {
 	go func() {
 		wwg.Wait()
-		close(storedCh)
+		close(out)
 	}()
+}
 
-	// * Manifest Batcher
+// runManifestBatcher consumes storedChunkItem, batches inserts into DB, and updates totals.
+func (u *UploadServiceImpl) runManifestBatcher(
+	chCtx context.Context,
+	wg *sync.WaitGroup,
+	in <-chan storedChunkItem,
+	fileID uuid.UUID,
+	batchSize int,
+	totals *uploadCounters,
+	errCh chan<- error,
+) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		var nextExpectedIdx int64 = 0
+
+		var nextIdx int64 = 0
 		items := make(map[int64]storedChunkItem)
-		var pendingManifest []domain.FileChunk
-		for item := range storedCh {
-			items[item.Idx] = item
-			for {
-				if fetchItem, ok := items[nextExpectedIdx]; !ok {
-					break
-				} else {
-					delete(items, nextExpectedIdx)
-					fileChunk := domain.FileChunk{
-						FileID:    createdFile.ID,
-						Idx:       fetchItem.Idx,
-						ChunkHash: fetchItem.Hash,
-						Size:      fetchItem.Size,
-					}
-					pendingManifest = append(pendingManifest, fileChunk)
-					totalSize += fetchItem.Size
-					chunksCount++
-					if fetchItem.Reused == false {
-						uniqueChunksWritten++
-					} else {
-						dedupeSavedBytes += fetchItem.Size
-					}
-					nextExpectedIdx++
-					if len(pendingManifest) == batchSize {
-						tx, txManifestErr := u.DB.Begin(chCtx)
-						if txManifestErr != nil {
-							select {
-							case errCh <- txManifestErr:
-							default:
-							}
-							cancel()
-							return
-						}
-						fcrErr := u.FileChunkRepository.AddChunks(chCtx, tx, createdFile.ID, pendingManifest)
-						if fcrErr != nil {
-							_ = tx.Rollback(chCtx)
-							select {
-							case errCh <- fcrErr:
-							default:
-							}
-							cancel()
-							return
-						}
-						fcrCommitErr := tx.Commit(chCtx)
-						if fcrCommitErr != nil {
-							select {
-							case errCh <- fcrCommitErr:
-							default:
-							}
-							cancel()
-							return
-						}
-						pendingManifest = pendingManifest[:0]
-					}
-				}
-			}
-		}
-		if len(pendingManifest) > 0 {
-			tx, txManifestErr := u.DB.Begin(chCtx)
-			if txManifestErr != nil {
+		var pending []domain.FileChunk
+
+		flush := func() bool {
+			tx, txErr := u.DB.Begin(chCtx)
+			if txErr != nil {
 				select {
-				case errCh <- txManifestErr:
+				case errCh <- txErr:
 				default:
 				}
-				cancel()
-				return
+				return false
 			}
-			fcrErr := u.FileChunkRepository.AddChunks(chCtx, tx, createdFile.ID, pendingManifest)
-			if fcrErr != nil {
+			err := u.FileChunkRepository.AddChunks(chCtx, tx, fileID, pending)
+			if err != nil {
 				_ = tx.Rollback(chCtx)
 				select {
-				case errCh <- fcrErr:
+				case errCh <- err:
 				default:
 				}
-				cancel()
-				return
+				return false
 			}
-			fcrCommitErr := tx.Commit(chCtx)
-			if fcrCommitErr != nil {
+			if err := tx.Commit(chCtx); err != nil {
 				select {
-				case errCh <- fcrCommitErr:
+				case errCh <- err:
 				default:
 				}
-				cancel()
-				return
+				return false
+			}
+			pending = pending[:0]
+			return true
+		}
+
+		for item := range in {
+			items[item.Idx] = item
+			for {
+				fetch, ok := items[nextIdx]
+				if !ok {
+					break
+				}
+				delete(items, nextIdx)
+				fc := domain.FileChunk{
+					FileID:    fileID,
+					Idx:       fetch.Idx,
+					ChunkHash: fetch.Hash,
+					Size:      fetch.Size,
+				}
+				pending = append(pending, fc)
+
+				// update counters
+				totals.TotalSize += fetch.Size
+				totals.ChunksCount++
+				if !fetch.Reused {
+					totals.UniqueChunksWritten++
+				} else {
+					totals.DedupeSavedBytes += fetch.Size
+				}
+
+				nextIdx++
+				if len(pending) == batchSize {
+					if !flush() {
+						return
+					}
+				}
 			}
 		}
-	}()
 
-	doneCh := make(chan struct{})
+		if len(pending) > 0 {
+			_ = flush()
+		}
+	}()
+}
+
+// waits for all goroutines or an error.
+func waitForPipeline(wg *sync.WaitGroup, errCh <-chan error) error {
+	done := make(chan struct{})
 	go func() {
 		wg.Wait()
-		close(doneCh)
+		close(done)
 	}()
-
 	select {
-	case <-doneCh:
-		cancel()
-	case <-errCh:
-		cancel()
+	case <-done:
+		return nil
+	case err := <-errCh:
+		return err
+	}
+}
+
+// updates the file row with final total size.
+func (u *UploadServiceImpl) updateFileTotals(ctx context.Context, fileID uuid.UUID, totalSize int64) error {
+	tx, err := u.DB.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	err = u.FileRepository.UpdateTotals(ctx, tx, fileID, totalSize)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (u *UploadServiceImpl) Upload(ctx context.Context, req web.UploadRequest) (web.UploadResponse, error) {
+	if err := u.Validate.Struct(req); err != nil {
+		return web.UploadResponse{}, helper.ErrInvalidInput
+	}
+
+	createdFile, err := u.createFileRow(ctx, req.FileName)
+	if err != nil {
 		return web.UploadResponse{}, helper.ErrInternal
 	}
 
-	finalTx, err := u.DB.Begin(ctx)
-	if err != nil {
-		return web.UploadResponse{}, err
+	chCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errCh := make(chan error, 1)
+	chunksCh := make(chan chunkItem, 8)
+	hashedCh := make(chan hashedChunkItem, 8)
+	storedCh := make(chan storedChunkItem, 8)
+	var wg sync.WaitGroup
+	var wwg sync.WaitGroup
+	totals := &uploadCounters{}
+
+	u.startChunker(chCtx, &wg, req.Reader, chunksCh, errCh, helper.ChunkSize)
+	u.startHasher(chCtx, &wg, chunksCh, hashedCh)
+	u.startStoreWorkers(chCtx, &wwg, hashedCh, storedCh, errCh, helper.Workers)
+	closeStoredWhenWorkersDone(&wwg, storedCh)
+	u.runManifestBatcher(chCtx, &wg, storedCh, createdFile.ID, helper.BatchSize, totals, errCh)
+
+	if err := waitForPipeline(&wg, errCh); err != nil {
+		return web.UploadResponse{}, helper.ErrInternal
 	}
-	updatedErr := u.FileRepository.UpdateTotals(ctx, finalTx, createdFile.ID, totalSize)
-	if updatedErr != nil {
-		finalTx.Rollback(ctx)
-		return web.UploadResponse{}, updatedErr
-	}
-	finalCommErr := finalTx.Commit(ctx)
-	if finalCommErr != nil {
+
+	if err := u.updateFileTotals(ctx, createdFile.ID, totals.TotalSize); err != nil {
 		return web.UploadResponse{}, helper.ErrInternal
 	}
 
 	return web.UploadResponse{
 		FileID:              createdFile.ID,
-		TotalSize:           totalSize,
-		ChunksCount:         chunksCount,
-		UniqueChunksWritten: uniqueChunksWritten,
-		DedupeSavedBytes:    dedupeSavedBytes,
+		TotalSize:           totals.TotalSize,
+		ChunksCount:         totals.ChunksCount,
+		UniqueChunksWritten: totals.UniqueChunksWritten,
+		DedupeSavedBytes:    totals.DedupeSavedBytes,
 	}, nil
 }
