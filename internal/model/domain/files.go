@@ -10,4 +10,5 @@ type File struct {
 	Filename  string
 	TotalSize int64
 	CreatedAt time.Time
+	UpdatedAt time.Time
 }

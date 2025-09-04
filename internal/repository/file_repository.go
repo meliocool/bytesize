@@ -11,4 +11,5 @@ type FileRepository interface {
 	Create(ctx context.Context, tx pgx.Tx, file domain.File) (domain.File, error)
 	FindByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (domain.File, error)
 	List(ctx context.Context, tx pgx.Tx) ([]domain.File, error)
+	UpdateTotals(ctx context.Context, tx pgx.Tx, id uuid.UUID, totalSize int64) error
 }

@@ -7,6 +7,6 @@ import (
 
 type UploadRequest struct {
 	Ctx      context.Context
-	FileName string    `validate:"required, min=1" json:"filename"`
+	FileName string    `validate:"required" json:"filename"`
 	Reader   io.Reader `validate:"required"`
 }

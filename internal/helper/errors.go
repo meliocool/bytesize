@@ -12,6 +12,7 @@ var ErrTooLarge = errors.New("payload too large")
 var ErrNotFound = errors.New("resource not found")
 var ErrInvalidInput = errors.New("invalid input")
 var ErrInternal = errors.New("internal server error")
+var ErrUnsupportedMediaType = errors.New("unsupported media type")
 
 func WriteErr(w http.ResponseWriter, err error) {
 	w.Header().Set("Content-Type", "application/json")
@@ -39,6 +40,15 @@ func WriteErr(w http.ResponseWriter, err error) {
 		webResponse := web.WebResponse{
 			Code:   http.StatusNotFound,
 			Status: "Resource Not Found!",
+			Data:   err.Error(),
+		}
+		encoder.Encode(webResponse)
+	} else if errors.Is(err, ErrUnsupportedMediaType) {
+		w.WriteHeader(http.StatusUnsupportedMediaType)
+		encoder := json.NewEncoder(w)
+		webResponse := web.WebResponse{
+			Code:   http.StatusUnsupportedMediaType,
+			Status: "Unsupported Media Type!",
 			Data:   err.Error(),
 		}
 		encoder.Encode(webResponse)

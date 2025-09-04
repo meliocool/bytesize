@@ -25,6 +25,17 @@ type UploadServiceImpl struct {
 	Validate            *validator.Validate
 }
 
+func NewUploadService(ChunkRepository repository.ChunkRepository, FileRepository repository.FileRepository, FileChunkRepository repository.FileChunkRepository, ChunkStore storage.ChunkStore, DB *pgxpool.Pool, Validate *validator.Validate) UploadService {
+	return &UploadServiceImpl{
+		ChunkRepository:     ChunkRepository,
+		FileRepository:      FileRepository,
+		FileChunkRepository: FileChunkRepository,
+		ChunkStore:          ChunkStore,
+		DB:                  DB,
+		Validate:            Validate,
+	}
+}
+
 type chunkItem struct {
 	Idx   int64
 	Bytes []byte
@@ -52,27 +63,33 @@ func (u *UploadServiceImpl) Upload(ctx context.Context, request web.UploadReques
 	}
 
 	tx, err := u.DB.Begin(ctx)
+	if err != nil {
+		return web.UploadResponse{}, err
+	}
+
 	file := domain.File{
 		Filename:  request.FileName,
 		TotalSize: 0,
 	}
+
 	createdFile, err := u.FileRepository.Create(ctx, tx, file)
 	if err != nil {
-		rollbackErr := tx.Rollback(ctx)
-		if rollbackErr != nil {
-			return web.UploadResponse{}, helper.ErrInternal
-		}
+		tx.Rollback(ctx)
 		return web.UploadResponse{}, helper.ErrInternal
 	}
-	_ = tx.Commit(ctx)
+
+	firstCommErr := tx.Commit(ctx)
+	if firstCommErr != nil {
+		return web.UploadResponse{}, helper.ErrInternal
+	}
 
 	var totalSize int64 = 0
 	var chunksCount int64 = 0
 	var uniqueChunksWritten int64 = 0
 	var dedupeSavedBytes int64 = 0
-	var chunkSize = 4 * 1024 * 1024
-	var batchSize = 200
-	var workers = 10
+	var chunkSize = helper.ChunkSize
+	var batchSize = helper.BatchSize
+	var workers = helper.Workers
 
 	chCtx, cancel := context.WithCancel(ctx)
 	errCh := make(chan error, 1)
@@ -97,7 +114,7 @@ func (u *UploadServiceImpl) Upload(ctx context.Context, request web.UploadReques
 			n, readErr := request.Reader.Read(buffer)
 			if n > 0 {
 				chunkSlice := make([]byte, n)
-				copy(chunkSlice, buffer)
+				copy(chunkSlice, buffer[:n])
 				chunk := chunkItem{
 					Idx:   idxLocal,
 					Bytes: chunkSlice,
@@ -334,11 +351,25 @@ func (u *UploadServiceImpl) Upload(ctx context.Context, request web.UploadReques
 
 	select {
 	case <-doneCh:
+		cancel()
 	case <-errCh:
+		cancel()
 		return web.UploadResponse{}, helper.ErrInternal
 	}
 
-	cancel()
+	finalTx, err := u.DB.Begin(ctx)
+	if err != nil {
+		return web.UploadResponse{}, err
+	}
+	updatedErr := u.FileRepository.UpdateTotals(ctx, finalTx, createdFile.ID, totalSize)
+	if updatedErr != nil {
+		finalTx.Rollback(ctx)
+		return web.UploadResponse{}, updatedErr
+	}
+	finalCommErr := finalTx.Commit(ctx)
+	if finalCommErr != nil {
+		return web.UploadResponse{}, helper.ErrInternal
+	}
 
 	return web.UploadResponse{
 		FileID:              createdFile.ID,
