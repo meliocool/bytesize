@@ -3,9 +3,12 @@ package main
 import (
 	"github.com/go-playground/validator/v10"
 	"github.com/joho/godotenv"
+	"github.com/julienschmidt/httprouter"
 	"meliocool/bytesize/app"
 	"meliocool/bytesize/internal/controller"
+	"meliocool/bytesize/internal/middleware"
 	"meliocool/bytesize/internal/repository"
+	"meliocool/bytesize/internal/service/download"
 	"meliocool/bytesize/internal/service/upload"
 	"meliocool/bytesize/internal/storage"
 	"net/http"
@@ -28,11 +31,17 @@ func main() {
 	uploadService := upload.NewUploadService(chunkRepository, fileRepository, fileChunksRepository, chunkStorage, db, validate)
 	uploadController := controller.NewUploadController(uploadService)
 
-	router := app.NewRouter(uploadController)
+	downloadService := download.NewDownloadService(fileRepository, fileChunksRepository, chunkStorage, db)
+	downloadController := controller.NewDownloadController(downloadService, fileRepository, db)
+
+	router := httprouter.New()
+
+	router.POST("/files/upload", uploadController.Upload)
+	router.GET("/files/download/:id", downloadController.Download)
 
 	server := http.Server{
 		Addr:    "localhost:8080",
-		Handler: router,
+		Handler: middleware.NewAuthMiddleware(router),
 	}
 
 	err := server.ListenAndServe()

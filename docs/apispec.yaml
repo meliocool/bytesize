@@ -6,7 +6,7 @@ info:
 servers:
   - url: 'http://localhost:8080'
 paths:
-  /files:
+  /files/upload:
     post:
       summary: Upload a file (multipart)
       tags: [ByteSize]
@@ -79,7 +79,7 @@ paths:
                         size: { type: integer }
         '404': { description: Not found }
         '500': { description: Internal error }
-  /files/{id}/download:
+  /files/download/{id}:
     get:
       summary: Download original file bytes
       tags: [ByteSize]
