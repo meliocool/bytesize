@@ -6,14 +6,15 @@ Built with **Go**, **PostgreSQL**, and designed to scale with **goroutines**, **
 ---
 
 ## Features
-- File ingestion via REST API (`/upload`).
+- File ingestion via REST API (`/files/upload`).
+- **File download via REST API** (`/files/download/:id`) — streams the reconstructed file from chunks.
 - Automatic chunking (default: 4 MiB per chunk).
 - SHA-256 content hashing and deduplication.
 - Persistent chunk storage on disk (`FSChunkStore`).
 - PostgreSQL-backed metadata:
-    - Files
-    - Chunks
-    - File–chunk manifests
+  - Files
+  - Chunks
+  - File–chunk manifests
 - Transactional batch inserts with rollback on failure.
 - Structured error handling and JSON responses.
 
