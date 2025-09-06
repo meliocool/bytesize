@@ -37,7 +37,7 @@
   - unique_chunks_written (int64)
   - dedupe_saved_bytes (int64)
 
-## GET /files/{id}
+## GET /files/metadata/{id}
 - Response 200:
   - File metadatas
   - manifest: [{ idx, hash, diskSize }] in order

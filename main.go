@@ -9,6 +9,7 @@ import (
 	"meliocool/bytesize/internal/middleware"
 	"meliocool/bytesize/internal/repository"
 	"meliocool/bytesize/internal/service/download"
+	"meliocool/bytesize/internal/service/filemeta"
 	"meliocool/bytesize/internal/service/upload"
 	"meliocool/bytesize/internal/storage"
 	"net/http"
@@ -34,9 +35,13 @@ func main() {
 	downloadService := download.NewDownloadService(fileRepository, fileChunksRepository, chunkStorage, db)
 	downloadController := controller.NewDownloadController(downloadService, fileRepository, db)
 
+	fileMetaDataService := filemeta.NewFileMetaDataService(fileRepository, fileChunksRepository, db)
+	fileMetaDataController := controller.NewFileMetaDataController(fileMetaDataService)
+
 	router := httprouter.New()
 
 	router.POST("/files/upload", uploadController.Upload)
+	router.GET("/files/metadata/:id", fileMetaDataController.Get)
 	router.GET("/files/download/:id", downloadController.Download)
 
 	server := http.Server{

@@ -41,7 +41,7 @@ paths:
         '400': { description: Bad request / invalid multipart }
         '413': { description: Payload too large }
         '500': { description: Internal error }
-  /files/{id}:
+  /files/metadata/{id}:
     get:
       summary: Get file metadata and manifest
       tags: [ByteSize]
