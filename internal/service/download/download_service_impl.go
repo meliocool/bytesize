@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"meliocool/bytesize/internal/helper"
+	"meliocool/bytesize/internal/metrics"
 	"meliocool/bytesize/internal/repository"
 	"meliocool/bytesize/internal/storage"
 	"time"
@@ -32,22 +33,27 @@ func NewDownloadService(fileRepository repository.FileRepository, fileChunkRepos
 
 func (d *DownloadServiceImpl) Stream(ctx context.Context, fileID uuid.UUID, w io.Writer) error {
 	start := time.Now()
+	metrics.RequestsTotal.WithLabelValues("download").Inc()
+	defer metrics.RequestDuration.WithLabelValues("download").Observe(time.Since(start).Seconds())
 	d.Logger.Info("download_start", slog.String("file_id", fileID.String()))
 
 	if fileID == uuid.Nil {
 		d.Logger.Error("download_err", slog.String("stage", "validate"), slog.String("file_id", fileID.String()), slog.String("reason", "nil_uuid"))
+		metrics.ErrorsTotal.WithLabelValues("download").Inc()
 		return helper.ErrInvalidInput
 	}
 
 	tx, err := d.DB.Begin(ctx)
 	if err != nil {
 		d.Logger.Error("download_err", slog.String("stage", "db_begin"), slog.String("file_id", fileID.String()), slog.Any("err", err))
+		metrics.ErrorsTotal.WithLabelValues("download").Inc()
 		return err
 	}
 
 	fileRow, fileRowErr := d.FileRepository.FindByID(ctx, tx, fileID)
 	if fileRowErr != nil {
 		_ = tx.Rollback(ctx)
+		metrics.ErrorsTotal.WithLabelValues("download").Inc()
 		return helper.ErrNotFound
 	}
 
@@ -57,6 +63,7 @@ func (d *DownloadServiceImpl) Stream(ctx context.Context, fileID uuid.UUID, w io
 	if filesErr != nil {
 		_ = tx.Rollback(ctx)
 		d.Logger.Error("download_err", slog.String("stage", "find_manifest"), slog.String("file_id", fileID.String()), slog.Any("err", filesErr))
+		metrics.ErrorsTotal.WithLabelValues("download").Inc()
 		return helper.ErrInternal
 	}
 
@@ -64,6 +71,7 @@ func (d *DownloadServiceImpl) Stream(ctx context.Context, fileID uuid.UUID, w io
 		commErr := tx.Commit(ctx)
 		if commErr != nil {
 			d.Logger.Error("download_err", slog.String("stage", "commit"), slog.String("file_id", fileID.String()), slog.Any("err", commErr))
+			metrics.ErrorsTotal.WithLabelValues("download").Inc()
 			return helper.ErrInternal
 		}
 		return nil
@@ -71,6 +79,7 @@ func (d *DownloadServiceImpl) Stream(ctx context.Context, fileID uuid.UUID, w io
 
 	if len(manifest) == 0 && totalSize > 0 {
 		_ = tx.Rollback(ctx)
+		metrics.ErrorsTotal.WithLabelValues("download").Inc()
 		return helper.ErrInternal
 	}
 
@@ -84,6 +93,7 @@ func (d *DownloadServiceImpl) Stream(ctx context.Context, fileID uuid.UUID, w io
 	}
 	commErr := tx.Commit(ctx)
 	if commErr != nil {
+		metrics.ErrorsTotal.WithLabelValues("download").Inc()
 		return helper.ErrInternal
 	}
 
@@ -102,18 +112,22 @@ func (d *DownloadServiceImpl) Stream(ctx context.Context, fileID uuid.UUID, w io
 		rc, _, getErr := d.ChunkStore.Get(fc.ChunkHash)
 		if getErr != nil {
 			d.Logger.Error("download_err", slog.String("stage", "chunk_get"), slog.String("file_id", fileID.String()), slog.String("hash", fc.ChunkHash), slog.Any("err", getErr))
+			metrics.ErrorsTotal.WithLabelValues("download").Inc()
 			return helper.ErrInternal
 		}
 		n, copyErr := io.CopyBuffer(w, rc, buffer)
 		closeErr := rc.Close()
 		if closeErr != nil {
+			metrics.ErrorsTotal.WithLabelValues("download").Inc()
 			return helper.ErrInternal
 		}
 		if copyErr != nil {
 			d.Logger.Error("download_err", slog.String("stage", "copy"), slog.String("file_id", fileID.String()), slog.String("hash", fc.ChunkHash), slog.Any("err", copyErr))
+			metrics.ErrorsTotal.WithLabelValues("download").Inc()
 			return helper.ErrInternal
 		}
 		if fc.Size != n {
+			metrics.ErrorsTotal.WithLabelValues("download").Inc()
 			return helper.ErrInternal
 		}
 		writtenTotal += n
@@ -122,6 +136,7 @@ func (d *DownloadServiceImpl) Stream(ctx context.Context, fileID uuid.UUID, w io
 		}
 	}
 	if writtenTotal != totalSize {
+		metrics.ErrorsTotal.WithLabelValues("download").Inc()
 		return helper.ErrInternal
 	}
 	d.Logger.Info(
@@ -130,5 +145,8 @@ func (d *DownloadServiceImpl) Stream(ctx context.Context, fileID uuid.UUID, w io
 		slog.Int64("total_size", totalSize),
 		slog.Duration("took", time.Since(start)),
 	)
+
+	metrics.BytesStreamedTotal.Add(float64(writtenTotal))
+
 	return nil
 }

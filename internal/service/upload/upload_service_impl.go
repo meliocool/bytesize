@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"meliocool/bytesize/internal/helper"
+	"meliocool/bytesize/internal/metrics"
 	"meliocool/bytesize/internal/model/domain"
 	"meliocool/bytesize/internal/model/web"
 	"meliocool/bytesize/internal/repository"
@@ -378,16 +379,20 @@ func (u *UploadServiceImpl) updateFileTotals(ctx context.Context, fileID uuid.UU
 }
 
 func (u *UploadServiceImpl) Upload(ctx context.Context, req web.UploadRequest) (web.UploadResponse, error) {
+	start := time.Now()
+	metrics.RequestsTotal.WithLabelValues("upload").Inc()
+	defer metrics.RequestDuration.WithLabelValues("upload").Observe(time.Since(start).Seconds())
+	u.Logger.Info("upload_start", slog.String("filename", req.FileName))
+
 	if err := u.Validate.Struct(req); err != nil {
+		metrics.ErrorsTotal.WithLabelValues("upload").Inc()
 		return web.UploadResponse{}, helper.ErrInvalidInput
 	}
-
-	start := time.Now()
-	u.Logger.Info("upload_start", slog.String("filename", req.FileName))
 
 	createdFile, err := u.createFileRow(ctx, req.FileName)
 	if err != nil {
 		u.Logger.Error("upload_err", slog.String("stage", "create_file_row"), slog.String("filename", req.FileName), slog.Any("err", err))
+		metrics.ErrorsTotal.WithLabelValues("upload").Inc()
 		return web.UploadResponse{}, helper.ErrInternal
 	}
 
@@ -409,11 +414,13 @@ func (u *UploadServiceImpl) Upload(ctx context.Context, req web.UploadRequest) (
 
 	if err := waitForPipeline(&wg, errCh); err != nil {
 		u.Logger.Error("upload_err", slog.String("stage", "pipeline"), slog.String("file_id", createdFile.ID.String()), slog.Any("err", err))
+		metrics.ErrorsTotal.WithLabelValues("upload").Inc()
 		return web.UploadResponse{}, helper.ErrInternal
 	}
 
 	if err := u.updateFileTotals(ctx, createdFile.ID, totals.TotalSize); err != nil {
 		u.Logger.Error("upload_err", slog.String("stage", "update_totals"), slog.String("file_id", createdFile.ID.String()), slog.Any("err", err))
+		metrics.ErrorsTotal.WithLabelValues("upload").Inc()
 		return web.UploadResponse{}, helper.ErrInternal
 	}
 
@@ -426,6 +433,8 @@ func (u *UploadServiceImpl) Upload(ctx context.Context, req web.UploadRequest) (
 		slog.Int64("dedupe_saved_bytes", totals.DedupeSavedBytes),
 		slog.Duration("took", time.Since(start)), // ➐
 	)
+
+	metrics.BytesUploadedTotal.Add(float64(totals.TotalSize))
 
 	return web.UploadResponse{
 		FileID:              createdFile.ID,

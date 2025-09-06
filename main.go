@@ -4,6 +4,7 @@ import (
 	"github.com/go-playground/validator/v10"
 	"github.com/joho/godotenv"
 	"github.com/julienschmidt/httprouter"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"log/slog"
 	"meliocool/bytesize/app"
 	"meliocool/bytesize/internal/controller"
@@ -49,9 +50,13 @@ func main() {
 	router.GET("/files/metadata/:id", fileMetaDataController.Get)
 	router.GET("/files/download/:id", downloadController.Download)
 
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	mux.Handle("/", middleware.NewAuthMiddleware(router))
+
 	server := http.Server{
 		Addr:    "localhost:8080",
-		Handler: middleware.NewAuthMiddleware(router),
+		Handler: mux,
 	}
 
 	err := server.ListenAndServe()

@@ -21,6 +21,36 @@ Built with **Go**, **PostgreSQL**, and designed to scale with **goroutines**, **
 
 ---
 
+## Auth
+All routes are protected by an API key.
+
+- Header: `X-API-Key: <your-key>`
+- or Query: `?api_key=<your-key>`
+
+`MIDDLEWARE_KEY` is read from environment.
+
+---
+
+## Quick API Examples
+
+```bash
+# Upload (multipart/form-data)
+curl -H "X-API-Key: $MIDDLEWARE_KEY" -F "file=@/path/to/file.bin" \
+  http://localhost:8080/files/upload
+
+# Get metadata
+curl -H "X-API-Key: $MIDDLEWARE_KEY" \
+  http://localhost:8080/files/metadata/<uuid>
+
+# Download (respects Content-Disposition filename)
+curl -H "X-API-Key: $MIDDLEWARE_KEY" -OJ \
+  http://localhost:8080/files/download/<uuid>
+
+# Metrics (Prometheus text format)
+curl -H "X-API-Key: $MIDDLEWARE_KEY" \
+  http://localhost:8080/metrics
+```
+
 ## Tech Stack
 - Go (concurrency + service layer)
 - PostgreSQL (metadata storage)

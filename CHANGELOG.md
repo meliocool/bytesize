@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.3.0] - 2025-09-06
+### Added
+- **Metadata service & controller**: `GET /files/metadata/:id` returns `id, filename, total_size, chunks_count, created_at, updated_at`.
+- **Structured logging (slog)** across Upload, Download, and Metadata:
+  - `*_start`, `*_ok` (with `took`), and `*_err` with minimal `stage` context.
+- **Prometheus metrics** and `/metrics` endpoint:
+  - `bytesize_requests_total{endpoint}`
+  - `bytesize_errors_total{endpoint}`
+  - `bytesize_request_duration_seconds{endpoint}`
+  - `bytesize_bytes_uploaded_total`
+  - `bytesize_bytes_streamed_total`
+- **Auth on metrics** (if middleware is global): `/metrics` also accepts `X-API-Key` or `?api_key=`.
+
+### Changed
+- Services now accept a shared `*slog.Logger` and emit minimal structured logs.
+- Instrumented services with counters/histograms for basic observability.
+
+---
+
 ## [0.2.0] - 2025-09-05
 ### Added
 - **Download service**: streams reconstructed file bytes chunk-by-chunk from `FSChunkStore` using the file’s manifest (ordered by `idx`).
