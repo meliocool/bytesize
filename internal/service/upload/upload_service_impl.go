@@ -9,12 +9,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"io"
+	"log/slog"
 	"meliocool/bytesize/internal/helper"
 	"meliocool/bytesize/internal/model/domain"
 	"meliocool/bytesize/internal/model/web"
 	"meliocool/bytesize/internal/repository"
 	"meliocool/bytesize/internal/storage"
 	"sync"
+	"time"
 )
 
 type UploadServiceImpl struct {
@@ -24,6 +26,7 @@ type UploadServiceImpl struct {
 	ChunkStore          storage.ChunkStore
 	DB                  *pgxpool.Pool
 	Validate            *validator.Validate
+	Logger              *slog.Logger
 }
 
 func NewUploadService(
@@ -33,6 +36,7 @@ func NewUploadService(
 	chunkStore storage.ChunkStore,
 	db *pgxpool.Pool,
 	validate *validator.Validate,
+	logger *slog.Logger,
 ) UploadService {
 	return &UploadServiceImpl{
 		ChunkRepository:     chunkRepo,
@@ -41,6 +45,7 @@ func NewUploadService(
 		ChunkStore:          chunkStore,
 		DB:                  db,
 		Validate:            validate,
+		Logger:              logger,
 	}
 }
 
@@ -377,8 +382,12 @@ func (u *UploadServiceImpl) Upload(ctx context.Context, req web.UploadRequest) (
 		return web.UploadResponse{}, helper.ErrInvalidInput
 	}
 
+	start := time.Now()
+	u.Logger.Info("upload_start", slog.String("filename", req.FileName))
+
 	createdFile, err := u.createFileRow(ctx, req.FileName)
 	if err != nil {
+		u.Logger.Error("upload_err", slog.String("stage", "create_file_row"), slog.String("filename", req.FileName), slog.Any("err", err))
 		return web.UploadResponse{}, helper.ErrInternal
 	}
 
@@ -399,12 +408,24 @@ func (u *UploadServiceImpl) Upload(ctx context.Context, req web.UploadRequest) (
 	u.runManifestBatcher(chCtx, &wg, storedCh, createdFile.ID, helper.BatchSize, totals, errCh)
 
 	if err := waitForPipeline(&wg, errCh); err != nil {
+		u.Logger.Error("upload_err", slog.String("stage", "pipeline"), slog.String("file_id", createdFile.ID.String()), slog.Any("err", err))
 		return web.UploadResponse{}, helper.ErrInternal
 	}
 
 	if err := u.updateFileTotals(ctx, createdFile.ID, totals.TotalSize); err != nil {
+		u.Logger.Error("upload_err", slog.String("stage", "update_totals"), slog.String("file_id", createdFile.ID.String()), slog.Any("err", err))
 		return web.UploadResponse{}, helper.ErrInternal
 	}
+
+	u.Logger.Info(
+		"upload_ok",
+		slog.String("file_id", createdFile.ID.String()),
+		slog.Int64("total_size", totals.TotalSize),
+		slog.Int64("chunks_count", totals.ChunksCount),
+		slog.Int64("unique_chunks_written", totals.UniqueChunksWritten),
+		slog.Int64("dedupe_saved_bytes", totals.DedupeSavedBytes),
+		slog.Duration("took", time.Since(start)), // ➐
+	)
 
 	return web.UploadResponse{
 		FileID:              createdFile.ID,
