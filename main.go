@@ -10,6 +10,7 @@ import (
 	"meliocool/bytesize/internal/controller"
 	"meliocool/bytesize/internal/middleware"
 	"meliocool/bytesize/internal/repository"
+	deletefile "meliocool/bytesize/internal/service/delete"
 	"meliocool/bytesize/internal/service/download"
 	"meliocool/bytesize/internal/service/filelist"
 	"meliocool/bytesize/internal/service/filemeta"
@@ -48,12 +49,16 @@ func main() {
 	fileListService := filelist.NewFileListService(fileRepository, db)
 	fileListController := controller.NewFileListController(fileListService)
 
+	deleteService := deletefile.NewDeleteService(fileRepository, fileChunksRepository, chunkStorage, db)
+	deleteController := controller.NewDeleteController(deleteService)
+
 	router := httprouter.New()
 
 	router.POST("/files/upload", uploadController.Upload)
 	router.GET("/files", fileListController.List)
 	router.GET("/files/metadata/:id", fileMetaDataController.Get)
 	router.GET("/files/download/:id", downloadController.Download)
+	router.DELETE("/files/del/:id", deleteController.Delete)
 
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())

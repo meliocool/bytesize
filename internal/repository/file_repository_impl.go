@@ -90,3 +90,17 @@ func (f *FileRepositoryImpl) UpdateTotals(ctx context.Context, tx pgx.Tx, id uui
 
 	return nil
 }
+
+func (r *FileRepositoryImpl) Delete(ctx context.Context, tx pgx.Tx, id uuid.UUID) error {
+	if id == uuid.Nil {
+		return helper.ErrInvalidInput
+	}
+	cmd, err := tx.Exec(ctx, "DELETE FROM files WHERE id = $1", id)
+	if err != nil {
+		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		return helper.ErrNotFound
+	}
+	return nil
+}

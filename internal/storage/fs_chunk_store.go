@@ -118,3 +118,13 @@ func (s *FSChunkStore) Exists(hash string) (bool, error) {
 func (s *FSChunkStore) pathFromHash(hash string) string {
 	return filepath.Join(s.BaseDir, hash[0:2], hash[2:4], hash)
 }
+
+func (s *FSChunkStore) Delete(hash string) error {
+	path := s.pathFromHash(hash)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	_ = os.Remove(filepath.Dir(path))
+	_ = os.Remove(filepath.Dir(filepath.Dir(path)))
+	return nil
+}
