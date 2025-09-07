@@ -8,6 +8,8 @@ Built with **Go**, **PostgreSQL**, and designed to scale with **goroutines**, **
 ## Features
 - **File ingestion via REST API** (`/files/upload`).
 - **Gets a certain File MetaData** (`/files/metadata/:id`)
+- **Get All Files** (`/files`)
+- **Deletes a certain File** (`/files/del/:id`)
 - **File download via REST API** (`/files/download/:id`) — streams the reconstructed file from chunks.
 - Automatic chunking (default: 4 MiB per chunk).
 - SHA-256 content hashing and deduplication.

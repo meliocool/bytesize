@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.4.0] - 2025-09-07
+### Added
+- **Files list endpoint**: `GET /files` returns all files (`id, filename, total_size, created_at, updated_at`) ordered by `created_at DESC`.
+- **Delete endpoint**: `DELETE /files/del/:id`
+  - Deletes the file row.
+  - Cascades removal of its manifest (`file_chunks`) via FK `ON DELETE CASCADE`.
+  - **GC of orphan chunks**: removes unreferenced rows from `chunks` and deletes corresponding chunk files from `FSChunkStore`.
+- **Frontend (Next.js + Tailwind + shadcn/ui + Axios)**:
+  - One-page dashboard with **table/grid toggle**, upload modal, per-item **Download** (and Delete action wired to new API).
+  - Axios adds `X-API-Key` and `?api_key=` on every request; `/api/*` rewrite proxies to the Go backend.
+- **CLI dev runner**:
+  - `bytesize-cli run` prints friendly banner and URLs, launches backend + frontend, and cleans up on Ctrl+C.
+
+### Changed
+- Storage layer: added `ChunkStore.Delete(hash)` to remove chunk files (and optionally tidy empty directories).
+- Router/middleware updated to register **list** and **delete** routes (and allow `DELETE`, plus `OPTIONS` if CORS path is used).
+
+---
+
 ## [0.3.0] - 2025-09-06
 ### Added
 - **Metadata service & controller**: `GET /files/metadata/:id` returns `id, filename, total_size, chunks_count, created_at, updated_at`.
