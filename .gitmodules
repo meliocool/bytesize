@@ -1,0 +1,6 @@
+[submodule "frontend"]
+	path = frontend
+	url = https://github.com/meliocool/bytesize_frontend.git
+[submodule "cli"]
+	path = cli
+	url = https://github.com/meliocool/bytesize_cli.git
