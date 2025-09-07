@@ -31,26 +31,6 @@ All routes are protected by an API key.
 
 ---
 
-## Quick API Examples
-
-```bash
-# Upload (multipart/form-data)
-curl -H "X-API-Key: $MIDDLEWARE_KEY" -F "file=@/path/to/file.bin" \
-  http://localhost:8080/files/upload
-
-# Get metadata
-curl -H "X-API-Key: $MIDDLEWARE_KEY" \
-  http://localhost:8080/files/metadata/<uuid>
-
-# Download (respects Content-Disposition filename)
-curl -H "X-API-Key: $MIDDLEWARE_KEY" -OJ \
-  http://localhost:8080/files/download/<uuid>
-
-# Metrics (Prometheus text format)
-curl -H "X-API-Key: $MIDDLEWARE_KEY" \
-  http://localhost:8080/metrics
-```
-
 ## Tech Stack
 - Go (concurrency + service layer)
 - PostgreSQL (metadata storage)
