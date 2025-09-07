@@ -11,6 +11,7 @@ import (
 	"meliocool/bytesize/internal/middleware"
 	"meliocool/bytesize/internal/repository"
 	"meliocool/bytesize/internal/service/download"
+	"meliocool/bytesize/internal/service/filelist"
 	"meliocool/bytesize/internal/service/filemeta"
 	"meliocool/bytesize/internal/service/upload"
 	"meliocool/bytesize/internal/storage"
@@ -44,9 +45,13 @@ func main() {
 	fileMetaDataService := filemeta.NewFileMetaDataService(fileRepository, fileChunksRepository, db, logger)
 	fileMetaDataController := controller.NewFileMetaDataController(fileMetaDataService)
 
+	fileListService := filelist.NewFileListService(fileRepository, db)
+	fileListController := controller.NewFileListController(fileListService)
+
 	router := httprouter.New()
 
 	router.POST("/files/upload", uploadController.Upload)
+	router.GET("/files", fileListController.List)
 	router.GET("/files/metadata/:id", fileMetaDataController.Get)
 	router.GET("/files/download/:id", downloadController.Download)
 
@@ -55,7 +60,7 @@ func main() {
 	mux.Handle("/", middleware.NewAuthMiddleware(router))
 
 	server := http.Server{
-		Addr:    "localhost:8080",
+		Addr:    ":8080",
 		Handler: mux,
 	}
 
