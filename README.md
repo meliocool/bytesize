@@ -39,6 +39,7 @@ All routes are protected by an API key.
 - Local FS (FSChunkStore) for chunk data 
 - httprouter for routing 
 - validator.v10 for request validation
+- Frontend with Next.JS and TailwindCSS
 
 ## Contributing
 - Will be developed alone
